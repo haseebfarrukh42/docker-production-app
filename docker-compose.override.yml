@@ -1,0 +1,179 @@
+# =============================================================
+# docker-compose.override.yml
+# Development overrides — automatically applied by Docker Compose
+# NEVER deploy this file to production
+#
+# This file is merged ON TOP of docker-compose.yml
+# It adds bind mounts, dev commands, and debug settings
+# =============================================================
+
+services:
+
+  # ── BACKEND: Development overrides ────────────────────────
+  backend:
+    # Override: use dev Dockerfile with nodemon
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev    # ← Override production Dockerfile
+    # Override: nodemon for live reloading
+    command: nodemon --watch . --ext js,json server.js
+    # Add development environment variables
+    environment:
+      - NODE_ENV=development
+      - DEBUG=app:*               # Enable debug logging
+      - LOG_LEVEL=debug
+    volumes:
+      # Bind mount: sync host source code into container
+      # Any file change on host is instantly visible in container
+      - ./backend:/app
+      # Anonymous volume trick: prevents host node_modules
+      # from overwriting container's node_modules
+      # Container's /app/node_modules is preserved as-is
+      - /app/node_modules
+    # Expose port directly for development debugging
+    ports:
+      - "5000:5000"               # Direct access without Nginx
+
+  # ── API SERVICE: Development overrides ────────────────────
+  api-service:
+    build:
+      context: ./api-service
+      dockerfile: Dockerfile.dev
+    # Override: uvicorn with --reload for live Python reloading
+    command: >
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app
+      --log-level debug
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=debug
+    volumes:
+      # Bind mount Python source code
+      - ./api-service:/app
+    ports:
+      - "8000:8000"               # Direct access + Swagger UI
+
+  # ── FRONTEND: Development overrides ───────────────────────
+  frontend:
+    # Override: React dev server instead of built Nginx image
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev    # ← React dev server
+    command: npm start              # webpack dev server with HMR
+    environment:
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true    # Required for file watching in Docker
+      - REACT_APP_API_URL=http://localhost/api
+      - WATCHPACK_POLLING=true      # webpack file watching
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules           # Preserve container node_modules
+    ports:
+      - "3000:3000"                 # React dev server port
+    stdin_open: true                # Required for Create React App
+    tty: true
+
+  # ── POSTGRES: Development overrides ───────────────────────
+  postgres:
+    # Expose postgres port directly for dev tools
+    # (In production this is expose: only, not ports:)
+    ports:
+      - "5432:5432"                 # DBeaver, TablePlus, pgAdmin access
+    environment:
+      - POSTGRES_LOG_STATEMENT=all  # Log every SQL query (dev only!)
+
+  # ── REDIS: Development overrides ──────────────────────────
+  redis:
+    ports:
+      - "6379:6379"                 # Redis CLI, RedisInsight access
+
+  # ── NGINX: Development overrides ──────────────────────────
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    # Mount nginx config for live editing (no rebuild needed)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+
+  # ── MIGRATION RUNNER ───────────────────────────────────────
+  # This is a one-time service — runs migrations then exits
+  # Use with: docker compose run --rm migrate
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    # Override entrypoint to run migration script then exit
+    entrypoint: ["node", "scripts/migrate.js"]
+    # No CMD needed — entrypoint is the full command
+    networks:
+      - backend-network
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-appdb}
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+    secrets:
+      - db_password
+      - db_user
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # profiles: prevents this from starting with docker compose up
+    # Only runs when explicitly called:
+    # docker compose run --rm migrate
+    profiles:
+      - tools
+
+  # ── SEED RUNNER ────────────────────────────────────────────
+  seed:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    entrypoint: ["node", "scripts/seed.js"]
+    networks:
+      - backend-network
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-appdb}
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+    secrets:
+      - db_password
+      - db_user
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
+  # ── TEST RUNNER ────────────────────────────────────────────
+  test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    entrypoint: ["node", "scripts/test.js"]
+    networks:
+      - backend-network
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-appdb}
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+    secrets:
+      - db_password
+      - db_user
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles:
+      - tools

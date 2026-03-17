@@ -1,0 +1,25 @@
+# Environment files — NEVER commit real credentials
+.env
+*.env
+!.env.example
+
+# SSL certificates
+nginx/ssl/*.pem
+nginx/ssl/*.crt
+nginx/ssl/*.key
+
+# Docker volumes backup
+backups/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Node modules (if any local dev)
+node_modules/
+secrets/*.txt
+secrets/

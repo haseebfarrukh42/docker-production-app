@@ -1,0 +1,296 @@
+# =============================================================
+# Docker Production App — docker-compose.yml
+# Phase 5: Reliability, Health Checks & Resource Limits
+# =============================================================
+
+services:
+
+  # ── NGINX GATEWAY ──────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: app-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - frontend-network
+      - backend-network
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    labels:
+      com.docker-app.service: "nginx"
+      com.docker-app.tier: "gateway"
+      com.docker-app.tech: "nginx-1.25"
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+
+  # ── FRONTEND ──────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    container_name: app-frontend
+    expose:
+      - "80"
+    networks:
+      - frontend-network
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+    labels:
+      com.docker-app.service: "frontend"
+      com.docker-app.tier: "presentation"
+      com.docker-app.tech: "react-nginx"
+      com.docker-app.version: "${APP_VERSION:-1.0.0}"
+    restart: unless-stopped
+    healthcheck:
+      # wget -q: quiet mode, -O-: output to stdout, not file
+      # Checks Nginx inside the frontend container is serving
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 256M
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+
+  # ── BACKEND ───────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: app-backend
+    expose:
+      - "5000"
+    networks:
+      - backend-network
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=5000
+      - APP_VERSION=${APP_VERSION:-1.0.0}
+      - DB_HOST=postgres
+      - DB_PORT=${POSTGRES_PORT:-5432}
+      - DB_NAME=${POSTGRES_DB:-appdb}
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    secrets:
+      - db_password
+      - db_user
+      - jwt_secret
+    labels:
+      com.docker-app.service: "backend"
+      com.docker-app.tier: "application"
+      com.docker-app.tech: "nodejs-express"
+      com.docker-app.version: "${APP_VERSION:-1.0.0}"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy    # Wait until postgres passes health check
+      redis:
+        condition: service_healthy    # Wait until redis passes health check
+    healthcheck:
+      # Calls our /health endpoint — checks DB connection too
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  # ── API SERVICE ────────────────────────────────────────────
+  api-service:
+    build:
+      context: ./api-service
+      dockerfile: Dockerfile
+      target: production
+    container_name: app-api
+    expose:
+      - "8000"
+    networks:
+      - backend-network
+    environment:
+      - ENVIRONMENT=${PYTHON_ENV:-development}
+      - DB_HOST=postgres
+      - DB_PORT=${POSTGRES_PORT:-5432}
+      - DB_NAME=${POSTGRES_DB:-appdb}
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    secrets:
+      - db_password
+      - db_user
+    labels:
+      com.docker-app.service: "api-service"
+      com.docker-app.tier: "application"
+      com.docker-app.tech: "python-fastapi"
+      com.docker-app.version: "${APP_VERSION:-1.0.0}"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  # ── POSTGRESQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: app-postgres
+    expose:
+      - "5432"
+    networks:
+      - backend-network
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-appdb}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./postgres/02-indexes.sql:/docker-entrypoint-initdb.d/02-indexes.sql:ro
+    labels:
+      com.docker-app.service: "postgres"
+      com.docker-app.tier: "data"
+      com.docker-app.tech: "postgresql-15"
+    restart: unless-stopped
+    healthcheck:
+      # pg_isready: PostgreSQL's built-in readiness check tool
+      # -U: username, -d: database name
+      # Returns 0 only when PostgreSQL is ready to accept connections
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-appdb}"]
+      interval: 10s       # Check every 10s (more frequent for DB)
+      timeout: 5s
+      retries: 5          # Must fail 5 times before marked unhealthy
+      start_period: 30s   # Give postgres 30s grace period to initialize
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'
+          memory: 1G
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+
+  # ── REDIS ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: app-redis
+    expose:
+      - "6379"
+    networks:
+      - backend-network
+    volumes:
+      - redis-data:/data
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+    command: redis-server /etc/redis/redis.conf
+    labels:
+      com.docker-app.service: "redis"
+      com.docker-app.tier: "cache"
+      com.docker-app.tech: "redis-7"
+    restart: unless-stopped
+    healthcheck:
+      # redis-cli ping: returns "PONG" if Redis is healthy
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 384M    # Slightly above maxmemory=256mb for overhead
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+
+# =============================================================
+# SECRETS
+# =============================================================
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  db_user:
+    file: ./secrets/db_user.txt
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+
+# =============================================================
+# NETWORKS
+# =============================================================
+networks:
+  frontend-network:
+    driver: bridge
+    name: docker-app-frontend-net
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.1
+
+  backend-network:
+    driver: bridge
+    name: docker-app-backend-net
+    ipam:
+      config:
+        - subnet: 172.20.1.0/24
+          gateway: 172.20.1.1
+
+# =============================================================
+# VOLUMES
+# =============================================================
+volumes:
+  postgres-data:
+    name: docker-app-postgres-data
+  redis-data:
+    name: docker-app-redis-data

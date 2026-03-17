@@ -1,0 +1,22 @@
+# Development Dockerfile for React
+# Uses webpack dev server with Hot Module Replacement
+# Source code is bind mounted — not copied
+
+FROM node:18-alpine
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy package files and install deps
+# node_modules stay in container (not overwritten by bind mount)
+COPY package*.json ./
+RUN npm install
+
+# Source code comes from bind mount in docker-compose.override.yml
+# COPY . .  ← NOT needed in dev Dockerfile
+
+EXPOSE 3000
+
+# React dev server with hot reloading
+CMD ["npm", "start"]

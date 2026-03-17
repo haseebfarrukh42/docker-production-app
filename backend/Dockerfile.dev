@@ -1,0 +1,31 @@
+# Development Dockerfile — NOT for production
+# Includes nodemon for live reloading
+# Source code is mounted via bind mount — not copied here
+
+FROM node:18-alpine
+
+# Install nodemon globally for file watching
+RUN npm install -g nodemon
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodeuser -u 1001
+
+WORKDIR /app
+
+# Copy package files and install ALL deps (including devDependencies)
+COPY package*.json ./
+RUN npm install
+
+# Source code NOT copied here — it will be bind mounted
+# This means the COPY below is just a placeholder
+# Real code comes from: - ./backend:/app in override
+
+# Own the directory
+RUN chown -R nodeuser:nodejs /app
+USER nodeuser
+
+EXPOSE 5000
+
+# Use nodemon in development for live reloading
+CMD ["nodemon", "--watch", ".", "--ext", "js,json", "server.js"]
